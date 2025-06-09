@@ -1,0 +1,158 @@
+#!/bin/bash
+
+# claude - A wrapper script to intercept calls to the claude command and redirect them to claude-bridge
+# This script should be placed in a directory that's in PATH before the real claude command
+
+# Get the directory of this script
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Source NVM if available
+export NVM_DIR="$HOME/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  source "$NVM_DIR/nvm.sh"
+  
+  # Check if NVM is available
+  if [ -n "$(command -v nvm)" ]; then
+    # Get the path to the current script
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    
+    # Use the version of Node required by the project
+    if [ -f "$SCRIPT_DIR/package.json" ]; then
+      NODE_VERSION=$(node -e "console.log(require('$SCRIPT_DIR/package.json').engines.node.replace('>=', ''))")
+      echo "Using Node version $NODE_VERSION from package.json engines field"
+      nvm use "$NODE_VERSION" || nvm use default
+    fi
+  fi
+fi
+
+# Default provider and model
+PROVIDER="openai"
+MODEL="gpt-4o"
+API_KEY=""
+BASE_URL=""
+
+# Check environment variables first
+if [ -n "$CLAUDE_BRIDGE_PROVIDER" ]; then
+  PROVIDER="$CLAUDE_BRIDGE_PROVIDER"
+fi
+
+if [ -n "$CLAUDE_BRIDGE_MODEL" ]; then
+  MODEL="$CLAUDE_BRIDGE_MODEL"
+fi
+
+if [ -n "$CLAUDE_BRIDGE_API_KEY" ]; then
+  API_KEY="$CLAUDE_BRIDGE_API_KEY"
+fi
+
+if [ -n "$CLAUDE_BRIDGE_BASE_URL" ]; then
+  BASE_URL="$CLAUDE_BRIDGE_BASE_URL"
+fi
+
+# Log the interception (optional, for debugging)
+LOG_FILE="/tmp/claude-bridge-intercept.log"
+echo "$(date): Intercepted claude command with args: $@" >> "$LOG_FILE"
+echo "Environment: PROVIDER=$PROVIDER, MODEL=$MODEL, BASE_URL=$BASE_URL, API_KEY=${API_KEY:0:5}..." >> "$LOG_FILE"
+
+# Function to display help message
+show_help() {
+  echo "Claude Bridge Interceptor"
+  echo "------------------------"
+  echo "This is a wrapper around the claude-bridge command that intercepts calls to claude."
+  echo ""
+  echo "Usage:"
+  echo "  claude [options]       Regular Claude CLI options are passed to claude-bridge"
+  echo ""
+  echo "Provider Options (default: openai gpt-4o):"
+  echo "  --provider <name>      Set the LLM provider (openai, google)"
+  echo "  --model <name>         Set the model name"
+  echo "  --apiKey <key>         API key for the provider"
+  echo "  --baseURL <url>        Base URL for the API (e.g., custom endpoints or local servers)"
+  echo ""
+  echo "Environment variables (also supported):"
+  echo "  CLAUDE_BRIDGE_PROVIDER  Set the LLM provider"
+  echo "  CLAUDE_BRIDGE_MODEL     Set the model name"
+  echo "  CLAUDE_BRIDGE_API_KEY   Set the API key"
+  echo "  CLAUDE_BRIDGE_BASE_URL  Set the base URL"
+  echo ""
+  echo "Examples:"
+  echo "  claude                 Runs with default provider (openai gpt-4o)"
+  echo "  claude --provider google --model gemini-2.5-pro-preview-05-06"
+  echo "  claude --provider openai --model gpt-4o --apiKey sk-... --baseURL https://api.openai.com/v1"
+  echo "  claude -p \"Hello world\"  Passes the prompt to claude-bridge"
+  echo ""
+}
+
+# Parse arguments to extract provider and model
+CLAUDE_ARGS=()
+i=1
+while [ $i -le $# ]; do
+  arg="${!i}"  
+  
+  if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+    show_help
+    exit 0
+  elif [ "$arg" = "--provider" ]; then
+    i=$((i+1))
+    if [ $i -le $# ]; then
+      PROVIDER="${!i}"
+    fi
+  elif [ "$arg" = "--model" ]; then
+    i=$((i+1))
+    if [ $i -le $# ]; then
+      MODEL="${!i}"
+    fi
+  elif [ "$arg" = "--apiKey" ]; then
+    i=$((i+1))
+    if [ $i -le $# ]; then
+      API_KEY="${!i}"
+    fi
+  elif [ "$arg" = "--baseURL" ]; then
+    i=$((i+1))
+    if [ $i -le $# ]; then
+      BASE_URL="${!i}"
+    fi
+  else
+    CLAUDE_ARGS+=("$arg")
+  fi
+  i=$((i+1))
+done
+
+# Build the command with all options
+CMD_ARGS=("$PROVIDER" "$MODEL")
+
+# Add API key if specified
+if [ -n "$API_KEY" ]; then
+  CMD_ARGS+=("--apiKey" "$API_KEY")
+  # Export it also to environment for claude-bridge to pick up
+  export CLAUDE_BRIDGE_API_KEY="$API_KEY"
+fi
+
+# Add base URL if specified
+if [ -n "$BASE_URL" ]; then
+  CMD_ARGS+=("--baseURL" "$BASE_URL")
+  # Export it also to environment for claude-bridge to pick up
+  export CLAUDE_BRIDGE_BASE_URL="$BASE_URL"
+fi
+
+# Add all remaining Claude args
+for arg in "${CLAUDE_ARGS[@]}"; do
+  CMD_ARGS+=("$arg")
+done
+
+# Run claude-bridge with the specified options
+echo "Running claude-bridge with provider: $PROVIDER, model: $MODEL" >> "$LOG_FILE"
+if [ -n "$BASE_URL" ]; then
+  echo "Using custom baseURL: $BASE_URL" >> "$LOG_FILE" 
+fi
+if [ -n "$API_KEY" ]; then
+  echo "Using custom API key: ${API_KEY:0:5}..." >> "$LOG_FILE"
+fi
+
+# Export provider and model to environment for claude-bridge to pick up
+export CLAUDE_BRIDGE_PROVIDER="$PROVIDER"
+export CLAUDE_BRIDGE_MODEL="$MODEL"
+
+npx --no-install claude-bridge "${CMD_ARGS[@]}"
+
+# Exit with the same status as claude-bridge
+exit $?
