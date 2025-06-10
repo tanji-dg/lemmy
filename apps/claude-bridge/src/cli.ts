@@ -31,6 +31,7 @@ interface ClaudeArgs {
 	patchClaude?: boolean | undefined;
 	debug?: boolean | undefined;
 	trace?: boolean | undefined;
+	toolsEnabled?: boolean;
 	claudeArgs: string[];
 }
 
@@ -46,6 +47,7 @@ interface ParsedArgs {
 	logDir?: string | undefined;
 	patchClaude?: boolean | undefined;
 	debug?: boolean | undefined;
+	toolsEnabled?: boolean;
 	claudeArgs: string[];
 }
 
@@ -165,6 +167,8 @@ OPTIONS:
   --patch-claude        Patch Claude binary to disable anti-debugging checks
   --debug               Enable debug logging (requests/responses to .claude-bridge/)
   --trace               Spy mode: log all Claude ↔ Anthropic communication (implies --debug)
+  --tools-enable        Enable tool support for this session (default)
+  --tools-disable       Disable tool support for this session
   --version             Show version information
   --help, -h            Show this help
 
@@ -283,6 +287,7 @@ function showProviderModels(provider: string): void {
 
 function parseArguments(argv: string[]): ParsedArgs {
 	const args: ParsedArgs = {
+		toolsEnabled: true, // デフォルトでツールを有効化
 		claudeArgs: [],
 	};
 
@@ -330,6 +335,12 @@ function parseArguments(argv: string[]): ParsedArgs {
 			i++;
 		} else if (arg === "--patch-claude") {
 			args.patchClaude = true;
+			i++;
+		} else if (arg === "--tools-enable") {
+			args.toolsEnabled = true;
+			i++;
+		} else if (arg === "--tools-disable") {
+			args.toolsEnabled = false;
 			i++;
 		} else if (arg === "--debug") {
 			args.debug = true;
@@ -530,6 +541,7 @@ function runClaudeWithBridge(args: ClaudeArgs): number {
 			CLAUDE_BRIDGE_LOG_DIR: args.logDir,
 			CLAUDE_BRIDGE_DEBUG: args.debug?.toString(),
 			CLAUDE_BRIDGE_TRACE: args.trace?.toString(),
+			CLAUDE_BRIDGE_TOOLS_ENABLED: (args.toolsEnabled ?? true).toString(),
 		},
 	});
 
@@ -603,6 +615,7 @@ async function main(argv: string[] = process.argv) {
 		patchClaude: parsedArgs.patchClaude || false,
 		debug: parsedArgs.debug || false,
 		trace: parsedArgs.trace || false,
+		toolsEnabled: parsedArgs.toolsEnabled,
 		claudeArgs: parsedArgs.claudeArgs,
 	});
 

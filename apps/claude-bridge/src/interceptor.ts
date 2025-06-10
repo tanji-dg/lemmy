@@ -37,6 +37,8 @@ import {
 } from "./utils/request-parser.js";
 import { createProviderClient, validateCapabilities, convertThinkingParameters } from "./utils/provider.js";
 
+// We'll rely on config.toolsEnabled setting instead of model-specific compatibility
+
 export class ClaudeBridgeInterceptor {
 	private config!: BridgeConfig;
 	private logger!: Logger;
@@ -152,13 +154,55 @@ export class ClaudeBridgeInterceptor {
 		try {
 			// In trace mode, always call original Anthropic API (no transformation)
 			// Get response from provider or fallback to Anthropic
+			const modifiedRequestData = { ...requestData };
+
+			// Always ensure tools are properly handled for all providers
+			if (modifiedRequestData.body) {
+				// Log original request content
+				this.logger.log(
+					`📥 Original request content: ${JSON.stringify(modifiedRequestData.body, null, 2).substring(0, 500)}${JSON.stringify(modifiedRequestData.body, null, 2).length > 500 ? "..." : ""}`,
+				);
+
+				// Deep clone the body to avoid modifying original request
+				const body = { ...(modifiedRequestData.body as MessageCreateParamsBase) };
+
+				// Log the original request's tools if present
+				if (body.tools) {
+					this.logger.log(`📝 Original request contains ${body.tools.length} tools`);
+
+					// Log each tool for debugging
+					body.tools.forEach((tool, index) => {
+						this.logger.log(`📋 Tool[${index}]: ${tool.name} (${tool.type || "custom"})`);
+					});
+				}
+
+				// Remove tools completely if tools are disabled
+				if (!this.config.toolsEnabled) {
+					this.logger.log(`🔧 Tools disabled - removing tools from request`);
+					delete body.tools;
+				}
+
+				modifiedRequestData.body = body;
+
+				// Log the modified request after tool handling
+				this.logger.log(
+					`🔄 Final request ${modifiedRequestData.body.tools ? "contains" : "does not contain"} tools`,
+				);
+				this.logger.log(
+					`📤 Modified request content: ${JSON.stringify(modifiedRequestData.body, null, 2).substring(0, 500)}${JSON.stringify(modifiedRequestData.body, null, 2).length > 500 ? "..." : ""}`,
+				);
+			}
+
 			const response =
 				this.config.trace || !transformResult
 					? await originalFetch(input, init)
-					: await this.callProvider(transformResult, requestData.body);
+					: await this.callProvider(transformResult, modifiedRequestData.body);
+
+			// Log response status
+			this.logger.log(`📩 Response status: ${response.status} ${response.statusText}`);
 
 			// Log everything
-			await this.logComplete(requestData, response, transformResult, requestId);
+			await this.logComplete(modifiedRequestData, response, transformResult, requestId);
 
 			this.pendingRequests.delete(requestId);
 			return response;
@@ -196,6 +240,8 @@ export class ClaudeBridgeInterceptor {
 		originalRequest: MessageCreateParamsBase,
 	): Promise<Response> {
 		try {
+			// We now rely on the toolsEnabled config from CLI arguments
+
 			// Validate capabilities (skip for unknown models)
 			let validation: CapabilityValidationResult = { valid: true, warnings: [], adjustments: {} };
 			if (this.clientInfo.modelData) {
@@ -207,19 +253,69 @@ export class ClaudeBridgeInterceptor {
 				this.logger.log(`⚠️  Skipping capability validation for unknown model: ${this.clientInfo.model}`);
 			}
 
+			this.logger.log(`🔍 Tools Enabled: ${this.config.toolsEnabled}`);
+			this.logger.log(`🔍 Total Tools Before Filtering: ${transformResult.tools.length}`);
+
 			// Create dummy tools for deserialization
-			const dummyTools: ToolDefinition[] = transformResult.tools.map((tool: SerializedToolDefinition) => ({
-				name: tool.name,
-				description: tool.description,
-				schema: this.safeJsonSchemaToZod(tool.jsonSchema as JSONSchema),
-				execute: async () => {
-					throw new Error("Tool execution not supported in bridge mode");
-				},
-			}));
+			const dummyTools: ToolDefinition[] = [];
+
+			// CRITICAL: If tools are disabled, remove them from the serialized context
+			// This prevents "Cannot restore tool" errors when deserializing
+			if (!this.config.toolsEnabled) {
+				this.logger.log(`🔧 Tools disabled - removing tools from serialized context`);
+				// Make a deep copy of the context to avoid modifying the original
+				transformResult = {
+					...transformResult,
+					tools: [], // Empty the tools array
+				};
+
+				// Also remove any tool call references from messages
+				transformResult.messages = transformResult.messages.map((msg) => {
+					// For assistant messages, remove toolCalls
+					if (msg.role === "assistant" && "toolCalls" in msg) {
+						const { toolCalls, ...rest } = msg;
+						return rest;
+					}
+
+					// For user messages, remove toolResults
+					if (msg.role === "user" && "toolResults" in msg) {
+						const { toolResults, ...rest } = msg;
+						return rest;
+					}
+
+					return msg;
+				});
+
+				this.logger.log(`🔧 Removed all tool references from serialized context`);
+			} else if (this.config.toolsEnabled === true) {
+				// Only add tools if explicitly enabled
+				this.logger.log(`🔧 Tools explicitly enabled - adding ${transformResult.tools.length} tool definitions`);
+				transformResult.tools.forEach((tool: SerializedToolDefinition) => {
+					try {
+						dummyTools.push({
+							name: tool.name,
+							description: tool.description,
+							schema: this.safeJsonSchemaToZod(tool.jsonSchema as JSONSchema),
+							execute: async () => {
+								throw new Error("Tool execution not supported in bridge mode");
+							},
+						});
+					} catch (error) {
+						this.logger.log(`⚠️ Failed to create tool '${tool.name}': ${error}`);
+					}
+				});
+			} else {
+				this.logger.log(`🔧 Tools disabled - not adding any tool definitions`);
+			}
+
+			this.logger.log(`🔍 Dummy Tools Count: ${dummyTools.length}`);
 
 			// Deserialize context and call provider
+			this.logger.log(
+				`🔄 Deserializing context with ${dummyTools.length} tools and ${transformResult.tools.length} tool references`,
+			);
 			const context = Context.deserialize(transformResult, dummyTools);
-			const lastMessage = context.getMessages().pop();
+			const lastMessage = context.getMessages()[context.getMessages().length - 1];
 
 			// Construct proper AskInput from the last user message
 			let askInput: AskInput | string = "";
@@ -241,6 +337,18 @@ export class ClaudeBridgeInterceptor {
 			}
 
 			this.logger.log(`Calling ${this.clientInfo.provider} with model: ${this.clientInfo.model}`);
+
+			// Log the actual request being sent to the provider
+			this.logger.log(`🔍 Provider request details:`);
+			this.logger.log(`🔹 Provider: ${this.clientInfo.provider}`);
+			this.logger.log(`🔹 Model: ${this.clientInfo.model}`);
+			this.logger.log(
+				`🔹 AskInput: ${typeof askInput === "string" ? askInput : JSON.stringify(askInput).substring(0, 200)}${typeof askInput !== "string" && JSON.stringify(askInput).length > 200 ? "..." : ""}`,
+			);
+			this.logger.log(
+				`🔹 AskOptions: ${JSON.stringify(askOptions).substring(0, 200)}${JSON.stringify(askOptions).length > 200 ? "..." : ""}`,
+			);
+
 			const askResult: AskResult = await this.clientInfo.client.ask(askInput, { context, ...askOptions });
 
 			if (askResult.type !== "success") {
@@ -432,6 +540,10 @@ export async function initializeInterceptor(config?: BridgeConfig): Promise<Clau
 		logDirectory: process.env["CLAUDE_BRIDGE_LOG_DIR"] || ".claude-bridge",
 		debug: process.env["CLAUDE_BRIDGE_DEBUG"] === "true",
 		trace: process.env["CLAUDE_BRIDGE_TRACE"] === "true",
+		toolsEnabled:
+			process.env["CLAUDE_BRIDGE_TOOLS_ENABLED"] === undefined
+				? true
+				: process.env["CLAUDE_BRIDGE_TOOLS_ENABLED"] === "true",
 	};
 
 	globalInterceptor = await ClaudeBridgeInterceptor.create({ ...defaultConfig, ...config });

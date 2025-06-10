@@ -25,6 +25,9 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
   fi
 fi
 
+# Tool settings
+TOOLS_ENABLED="true"
+
 # Default provider and model
 PROVIDER="openai"
 MODEL="gpt-4o"
@@ -65,19 +68,25 @@ show_help() {
   echo "Provider Options (default: openai gpt-4o):"
   echo "  --provider <name>      Set the LLM provider (openai, google)"
   echo "  --model <name>         Set the model name"
-  echo "  --apiKey <key>         API key for the provider"
-  echo "  --baseURL <url>        Base URL for the API (e.g., custom endpoints or local servers)"
+  echo "  --apiKey <key>      API key for the provider"
+  echo "  --baseURL <url>     Base URL for the API (e.g., custom endpoints or local servers)"
+  echo ""
+  echo "Tool Options:"
+  echo "  --tools-enable      Enable tools support (default)"
+  echo "  --tools-disable     Disable tools support"
   echo ""
   echo "Environment variables (also supported):"
-  echo "  CLAUDE_BRIDGE_PROVIDER  Set the LLM provider"
-  echo "  CLAUDE_BRIDGE_MODEL     Set the model name"
-  echo "  CLAUDE_BRIDGE_API_KEY   Set the API key"
-  echo "  CLAUDE_BRIDGE_BASE_URL  Set the base URL"
+  echo "  CLAUDE_BRIDGE_PROVIDER       Set the LLM provider"
+  echo "  CLAUDE_BRIDGE_MODEL          Set the model name"
+  echo "  CLAUDE_BRIDGE_API_KEY        Set the API key"
+  echo "  CLAUDE_BRIDGE_BASE_URL       Set the base URL"
+  echo "  CLAUDE_BRIDGE_TOOLS_ENABLED  Set to 'true' or 'false' to enable/disable tools"
   echo ""
   echo "Examples:"
   echo "  claude                 Runs with default provider (openai gpt-4o)"
   echo "  claude --provider google --model gemini-2.5-pro-preview-05-06"
   echo "  claude --provider openai --model gpt-4o --apiKey sk-... --baseURL https://api.openai.com/v1"
+  echo "  claude --tools-disable   Disable tools support"
   echo "  claude -p \"Hello world\"  Passes the prompt to claude-bridge"
   echo ""
 }
@@ -111,6 +120,10 @@ while [ $i -le $# ]; do
     if [ $i -le $# ]; then
       BASE_URL="${!i}"
     fi
+  elif [ "$arg" = "--tools-enable" ]; then
+    TOOLS_ENABLED="true"
+  elif [ "$arg" = "--tools-disable" ]; then
+    TOOLS_ENABLED="false"
   else
     CLAUDE_ARGS+=("$arg")
   fi
@@ -151,6 +164,10 @@ fi
 # Export provider and model to environment for claude-bridge to pick up
 export CLAUDE_BRIDGE_PROVIDER="$PROVIDER"
 export CLAUDE_BRIDGE_MODEL="$MODEL"
+export CLAUDE_BRIDGE_TOOLS_ENABLED="$TOOLS_ENABLED"
+
+# Log tool settings
+echo "Tools enabled: $TOOLS_ENABLED" >> "$LOG_FILE"
 
 npx --no-install claude-bridge "${CMD_ARGS[@]}"
 
